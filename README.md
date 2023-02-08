@@ -2,7 +2,7 @@
 
 
 
-see notion doc here for detailed description! [https://www.notion.so/raph-quest-58f45c84564e4b558ed43bc15ffa4a92]
+See notion doc here for detailed description! [https://www.notion.so/raph-quest-58f45c84564e4b558ed43bc15ffa4a92]
 
 
 **Deliverables**
