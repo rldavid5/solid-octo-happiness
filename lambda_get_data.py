@@ -11,64 +11,67 @@ def lambda_handler(event, context):
     transfer_config = TransferConfig(multipart_threshold=1024 * 25, max_concurrency=10,
                                       multipart_chunksize=1024 * 25, use_threads=True)
 
-    # Parse the HTML file to extract the file names, URLs, and timestamps
+  
+   # Parse the HTML file to extract the file names, URLs, and timestamps
     url = "https://download.bls.gov/pub/time.series/pr/"
     response = requests.get(url)
     soup = BeautifulSoup(response.content, "html.parser")
-    file_list = soup.find("pre").text.strip().split("\n")
-
-    # Print current files in bucket
-    object_summaries = s3.list_objects(Bucket='greatcandidateraphael', Prefix='files/s3/')
-    object_keys = [obj['Key'] for obj in object_summaries['Contents']]
-    print(f'Current files in bucket: {object_keys}')
+    find_files = soup.find("pre").text.strip().split("\n")
+    links = soup.find_all("a")
     
+    files_dict = {}
+    for br_tag in soup.find_all("br"):
+        # the timestamp is the previous sibling of the <br> tag
+        time_stamp = br_tag.previous_sibling.previous_sibling
+        # check if the previous sibling is a tag with the name "a"
+        if br_tag.previous_sibling.name == "a":
+            file_name = br_tag.previous_sibling.text.strip()
+            # skip the "To Parent Directory" link
+            if file_name == "[To Parent Directory]":
+                continue
+            files_dict[file_name] = time_stamp
     
-    
-
-    # Iterate over website files
-    for file in file_list:
-        parts = file.split()
-        file_timestamp = parts[3] + " " + parts[4] + " " + parts[5]
+    # Cast timestamp to timestamp object for comparison later
+    for file, timestamp in files_dict.items():
+        parts = timestamp.split()
+        file_timestamp = parts[0] + " " + parts[1] + " " + parts[2] 
         file_datetime = datetime.strptime(file_timestamp, '%m/%d/%Y %I:%M %p')
-        file_name = parts[-1].split("/")[-1]
-        file_url = "https://download.bls.gov/pub/time.series/pr/" + parts[-1]
-        print(file_name)
-        print(file_datetime)
+        files_dict[file] = file_datetime
+    
+        
+        
+    # Get list of S3 files
+    s3_files = s3.list_objects(Bucket='greatcandidateraphael', Prefix='files/s3/')['Contents']
+    print(f"S3 bucket files: {s3_files}")
+
+    # Download files if they don't exist in directory
+    for file, timestamp in files_dict.items():
+        if not any(file in s3_file['Key'] for s3_file in s3_files):
+            print(f"{file} doesn't exist in the directory, downloading...")
+            url = "https://download.bls.gov/pub/time.series/pr/" + file
+            response = requests.get(url)
+            buffer = BytesIO(response.content)
+            s3.upload_fileobj(buffer, "greatcandidateraphael", f"files/s3/{file}", Config=transfer_config)
+            
+    # Check timestamps and replace files if necessary
+    for s3_file in s3_files:
+        file_name = s3_file['Key'].split("/")[-1]
+        if file_name in files_dict:
+            s3_timestamp = s3_file['LastModified'].strftime('%m/%d/%Y %I:%M %p')
+            s3_datetime = datetime.strptime(s3_timestamp, '%m/%d/%Y %I:%M %p')
+            website_datetime = files_dict[file_name]
+            if s3_datetime < website_datetime:
+                print(f"{file_name} has a different timestamp, downloading...")
+                url = "https://download.bls.gov/pub/time.series/pr/" + file_name
+                response = requests.get(url)
+                buffer = BytesIO(response.content)
+                s3.upload_fileobj(buffer, "greatcandidateraphael", f"files/s3/{file_name}", Config=transfer_config)
+                
+    # Delete files if they exist in the bucket but not on the website            
+    for s3_file in s3_files:
+        file_name = s3_file['Key'].split("/")[-1]
+        if file_name not in files_dict:
+            print(f"{file_name} doesn't exist on the website, deleting from S3...")
+            s3.delete_object(Bucket='greatcandidateraphael', Key=s3_file['Key'])
 
     
-    # Iterate over files in S3 bucket
-    for object_key in object_keys:
-        if object_key.startswith('files/s3/'):
-            file_name = object_key.split("/")[-1]
-
-            # If the file is not in the website file list, delete it from the bucket
-            if file_name not in [x.split()[-1].split("/")[-1] for x in file_list]:
-                s3.delete_object(Bucket='greatcandidateraphael',  Key ='files/s3/'+ file_name)
-                print(f'Deleted file: {file_name}')
-
-       
-        # Check if the file already exists in the S3 bucket
-        try:
-            s3.get_object(Bucket='greatcandidateraphael', Key ='files/s3/'+ file_name)
-            print(file_name + ' exists.')
-        except:
-            # If the file does not exist, download and upload it
-            file_response = requests.get(f'https://download.bls.gov/pub/time.series/pr/{file_name}')
-            file_bytes = BytesIO(file_response.content)
-            s3.upload_fileobj(file_bytes, 'greatcandidateraphael', 'files/s3/'+ file_name, Config=transfer_config)
-            print(f'Uploaded new file: {file_name}')
-        else:
-            # If the file exists, check if it has been updated
-            s3_object = s3.head_object(Bucket='greatcandidateraphael',  Key='files/s3/'+ file_name)
-            s3_last_modified = datetime.strptime(s3_object['LastModified'].strftime('%m/%d/%Y %I:%M %p'), '%m/%d/%Y %I:%M %p')
-
-            if file_datetime > s3_last_modified:
-                # If the file has been updated, download and upload the new version
-                file_response = requests.get(f'https://download.bls.gov/pub/time.series/pr/{file_name}')
-                file_bytes = BytesIO(file_response.content)
-                s3.upload_fileobj(file_bytes, 'greatcandidateraphael','files/s3/'+ file_name, Config=transfer_config)
-                print(f'Uploaded updated file: {file_name}')
-            else:
-                print(f'File up-to-date: {file_name}')
-                
-     print("All files checked and up-to-date.")
