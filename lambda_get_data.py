@@ -1,8 +1,9 @@
-import requests
 import boto3
+import requests
 from boto3.s3.transfer import TransferConfig
 from io import BytesIO
 from datetime import datetime
+from bs4 import BeautifulSoup
 
 def lambda_handler(event, context):
     # Connect to S3
@@ -16,32 +17,58 @@ def lambda_handler(event, context):
     soup = BeautifulSoup(response.content, "html.parser")
     file_list = soup.find("pre").text.strip().split("\n")
 
+    # Print current files in bucket
+    object_summaries = s3.list_objects(Bucket='greatcandidateraphael', Prefix='files/s3/')
+    object_keys = [obj['Key'] for obj in object_summaries['Contents']]
+    print(f'Current files in bucket: {object_keys}')
+    
+    
+    
+
+    # Iterate over website files
     for file in file_list:
         parts = file.split()
         file_timestamp = parts[3] + " " + parts[4] + " " + parts[5]
         file_datetime = datetime.strptime(file_timestamp, '%m/%d/%Y %I:%M %p')
         file_name = parts[-1].split("/")[-1]
         file_url = "https://download.bls.gov/pub/time.series/pr/" + parts[-1]
+        print(file_name)
+        print(file_datetime)
 
+    
+    # Iterate over files in S3 bucket
+    for object_key in object_keys:
+        if object_key.startswith('files/s3/'):
+            file_name = object_key.split("/")[-1]
+
+            # If the file is not in the website file list, delete it from the bucket
+            if file_name not in [x.split()[-1].split("/")[-1] for x in file_list]:
+                s3.delete_object(Bucket='greatcandidateraphael',  Key ='files/s3/'+ file_name)
+                print(f'Deleted file: {file_name}')
+
+       
         # Check if the file already exists in the S3 bucket
         try:
-            s3.head_object(Bucket='greatcandidateraphael', Key=file_name)
+            s3.get_object(Bucket='greatcandidateraphael', Key ='files/s3/'+ file_name)
+            print(file_name + ' exists.')
         except:
             # If the file does not exist, download and upload it
             file_response = requests.get(f'https://download.bls.gov/pub/time.series/pr/{file_name}')
             file_bytes = BytesIO(file_response.content)
-            s3.upload_fileobj(file_bytes, 'greatcandidateraphael', file_name, Config=transfer_config)
+            s3.upload_fileobj(file_bytes, 'greatcandidateraphael', 'files/s3/'+ file_name, Config=transfer_config)
             print(f'Uploaded new file: {file_name}')
         else:
             # If the file exists, check if it has been updated
-            s3_object = s3.head_object(Bucket='my-bucket', Key=file_name)
+            s3_object = s3.head_object(Bucket='greatcandidateraphael',  Key='files/s3/'+ file_name)
             s3_last_modified = datetime.strptime(s3_object['LastModified'].strftime('%m/%d/%Y %I:%M %p'), '%m/%d/%Y %I:%M %p')
 
             if file_datetime > s3_last_modified:
                 # If the file has been updated, download and upload the new version
                 file_response = requests.get(f'https://download.bls.gov/pub/time.series/pr/{file_name}')
                 file_bytes = BytesIO(file_response.content)
-                s3.upload_fileobj(file_bytes, 'my-bucket', file_name, Config=transfer_config)
+                s3.upload_fileobj(file_bytes, 'greatcandidateraphael','files/s3/'+ file_name, Config=transfer_config)
                 print(f'Uploaded updated file: {file_name}')
             else:
                 print(f'File up-to-date: {file_name}')
+                
+     print("All files checked and up-to-date.")
